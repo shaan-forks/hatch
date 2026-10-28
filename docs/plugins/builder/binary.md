@@ -22,6 +22,7 @@ The builder plugin name is `binary`.
 | `scripts` | all defined | An array of defined [script](../../config/metadata.md#cli) names to limit what gets built |
 | `python-version` | latest compatible Python minor version | The [Python version ID](https://ofek.dev/pyapp/latest/config/#known) to use |
 | `pyapp-version` | | The version of PyApp to use |
+| `auditable` | `false` | Whether to build with [cargo-auditable](https://github.com/rust-secure-code/cargo-auditable) so that vulnerability scanners can read the embedded dependency tree |
 
 ## Build behavior
 
@@ -30,6 +31,8 @@ If any [scripts](../../config/metadata.md#cli) are defined then each one will be
 Every executable will be built inside an `app` directory in the [output directory](../../config/build.md#output-directory).
 
 If the `CARGO` environment variable is set then that path will be used as the executable for performing builds.
+
+If the `auditable` option is enabled then builds will be performed with `cargo auditable`, which requires an installation of [cargo-auditable](https://github.com/rust-secure-code/cargo-auditable). This option cannot be used if the `CARGO` environment variable refers to [cross](https://github.com/cross-rs/cross), which [does not integrate](https://github.com/rust-secure-code/cargo-auditable/issues/95) with cargo-auditable.
 
 If the [`CARGO_BUILD_TARGET`](https://doc.rust-lang.org/cargo/reference/config.html#buildtarget) environment variable is set then its value will be appended to the file name stems.
 

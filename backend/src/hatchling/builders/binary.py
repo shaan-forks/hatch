@@ -20,6 +20,7 @@ class BinaryBuilderConfig(BuilderConfig):
         self.__scripts: list[str] | None = None
         self.__python_version: str | None = None
         self.__pyapp_version: str | None = None
+        self.__auditable: bool | None = None
 
     @property
     def scripts(self) -> list[str]:
@@ -81,6 +82,19 @@ class BinaryBuilderConfig(BuilderConfig):
 
         return self.__pyapp_version
 
+    @property
+    def auditable(self) -> bool:
+        if self.__auditable is None:
+            auditable = self.target_config.get("auditable", False)
+
+            if not isinstance(auditable, bool):
+                message = f"Field `tool.hatch.build.targets.{self.plugin_name}.auditable` must be a boolean"
+                raise TypeError(message)
+
+            self.__auditable = auditable
+
+        return self.__auditable
+
 
 class BinaryBuilder(BuilderInterface):
     """
@@ -122,6 +136,16 @@ class BinaryBuilder(BuilderInterface):
 
             cargo_path = "cargo"
 
+        # https://github.com/rust-secure-code/cargo-auditable
+        cargo_command = [cargo_path]
+        if self.config.auditable:
+            # https://github.com/rust-secure-code/cargo-auditable/issues/95
+            if os.path.splitext(os.path.basename(cargo_path))[0].lower() == "cross":
+                message = "The `auditable` option cannot be used if the `CARGO` environment variable refers to `cross`"
+                raise ValueError(message)
+
+            cargo_command.append("auditable")
+
         app_dir = os.path.join(directory, self.PLUGIN_NAME)
         if not os.path.isdir(app_dir):
             os.makedirs(app_dir)
@@ -150,11 +174,11 @@ class BinaryBuilder(BuilderInterface):
                     temp_exe_path = os.path.join(target_dir, build_target, "release", exe_name)
                 else:
                     temp_exe_path = os.path.join(target_dir, "release", exe_name)
-                install_command = [cargo_path, "build", "--release", "--target-dir", target_dir]
+                install_command = [*cargo_command, "build", "--release", "--target-dir", target_dir]
             else:
                 context_dir = temp_dir
                 temp_exe_path = os.path.join(temp_dir, "bin", exe_name)
-                install_command = [cargo_path, "install", "pyapp", "--force", "--root", temp_dir]
+                install_command = [*cargo_command, "install", "pyapp", "--force", "--root", temp_dir]
                 if self.config.pyapp_version:
                     install_command.extend(["--version", self.config.pyapp_version])
 
@@ -195,6 +219,8 @@ class BinaryBuilder(BuilderInterface):
         process = subprocess.run(*args, **kwargs)  # noqa: PLW1510
         if process.returncode:
             message = f"Compilation failed (code {process.returncode})"
+            if self.config.auditable:
+                message += ". The `auditable` option requires cargo-auditable to be installed"
             raise OSError(message)
 
     @classmethod

@@ -243,6 +243,39 @@ class TestPyAppVersion:
             _ = builder.config.pyapp_version
 
 
+class TestAuditable:
+    def test_default(self, isolation):
+        config = {"project": {"name": "My.App", "version": "0.1.0"}}
+        builder = BinaryBuilder(str(isolation), config=config)
+
+        assert builder.config.auditable is builder.config.auditable is False
+
+    def test_set(self, isolation):
+        config = {
+            "project": {
+                "name": "My.App",
+                "version": "0.1.0",
+            },
+            "tool": {"hatch": {"build": {"targets": {"binary": {"auditable": True}}}}},
+        }
+        builder = BinaryBuilder(str(isolation), config=config)
+
+        assert builder.config.auditable is True
+
+    def test_not_boolean(self, isolation):
+        config = {
+            "project": {
+                "name": "My.App",
+                "version": "0.1.0",
+            },
+            "tool": {"hatch": {"build": {"targets": {"binary": {"auditable": 9000}}}}},
+        }
+        builder = BinaryBuilder(str(isolation), config=config)
+
+        with pytest.raises(TypeError, match="Field `tool.hatch.build.targets.binary.auditable` must be a boolean"):
+            _ = builder.config.auditable
+
+
 class TestBuildBootstrap:
     def test_default(self, hatch, temp_dir, mocker):
         subprocess_run = mocker.patch("subprocess.run", side_effect=cargo_install)
@@ -687,6 +720,167 @@ class TestBuildBootstrap:
         assert len(build_artifacts) == 1
         assert expected_artifact == str(build_artifacts[0])
         assert (build_path / "binary" / ("my-app-0.1.0.exe" if sys.platform == "win32" else "my-app-0.1.0")).is_file()
+
+    def test_auditable_custom_cargo_pyapp_version(self, hatch, temp_dir, mocker):
+        subprocess_run = mocker.patch("subprocess.run", side_effect=cargo_install)
+
+        project_name = "My.App"
+
+        with temp_dir.as_cwd():
+            result = hatch("new", project_name)
+
+        assert result.exit_code == 0, result.output
+
+        project_path = temp_dir / "my-app"
+        config = {
+            "project": {"name": project_name, "version": "0.1.0"},
+            "tool": {
+                "hatch": {
+                    "build": {
+                        "targets": {"binary": {"versions": ["bootstrap"], "auditable": True, "pyapp-version": "9000"}}
+                    },
+                },
+            },
+        }
+        builder = BinaryBuilder(str(project_path), config=config)
+
+        build_path = project_path / "dist"
+        cargo_path = str(temp_dir / "rust tools" / ("cargo.exe" if sys.platform == "win32" else "cargo"))
+
+        with project_path.as_cwd({"CARGO": cargo_path}):
+            artifacts = list(builder.build())
+
+        subprocess_run.assert_called_once_with(
+            [cargo_path, "auditable", "install", "pyapp", "--force", "--root", mocker.ANY, "--version", "9000"],
+            cwd=mocker.ANY,
+            env=ExpectedEnvVars({"PYAPP_PROJECT_NAME": "my-app", "PYAPP_PROJECT_VERSION": "0.1.0"}),
+        )
+
+        assert len(artifacts) == 1
+        expected_artifact = artifacts[0]
+
+        build_artifacts = list(build_path.iterdir())
+        assert len(build_artifacts) == 1
+        assert expected_artifact == str(build_artifacts[0])
+        assert (build_path / "binary" / ("my-app-0.1.0.exe" if sys.platform == "win32" else "my-app-0.1.0")).is_file()
+
+    def test_auditable_local_build_with_build_target(self, hatch, temp_dir, mocker):
+        subprocess_run = mocker.patch("subprocess.run", side_effect=cargo_install)
+
+        project_name = "My.App"
+
+        with temp_dir.as_cwd():
+            result = hatch("new", project_name)
+
+        assert result.exit_code == 0, result.output
+
+        project_path = temp_dir / "my-app"
+        config = {
+            "project": {"name": project_name, "version": "0.1.0"},
+            "tool": {
+                "hatch": {
+                    "build": {"targets": {"binary": {"versions": ["bootstrap"], "auditable": True}}},
+                },
+            },
+        }
+        builder = BinaryBuilder(str(project_path), config=config)
+
+        build_path = project_path / "dist"
+
+        with project_path.as_cwd({"PYAPP_REPO": "test-path", "CARGO_BUILD_TARGET": "target"}):
+            artifacts = list(builder.build())
+
+        subprocess_run.assert_called_once_with(
+            ["cargo", "auditable", "build", "--release", "--target-dir", mocker.ANY],
+            cwd="test-path",
+            env=ExpectedEnvVars({"PYAPP_PROJECT_NAME": "my-app", "PYAPP_PROJECT_VERSION": "0.1.0"}),
+        )
+
+        assert len(artifacts) == 1
+        expected_artifact = artifacts[0]
+
+        build_artifacts = list(build_path.iterdir())
+        assert len(build_artifacts) == 1
+        assert expected_artifact == str(build_artifacts[0])
+        assert (
+            build_path / "binary" / ("my-app-0.1.0-target.exe" if sys.platform == "win32" else "my-app-0.1.0-target")
+        ).is_file()
+
+    @pytest.mark.parametrize("cross_name", ["cross", "cross.exe", "absolute"])
+    def test_auditable_cross(self, hatch, temp_dir, mocker, cross_name):
+        subprocess_run = mocker.patch("subprocess.run", side_effect=cargo_install)
+
+        project_name = "My.App"
+
+        with temp_dir.as_cwd():
+            result = hatch("new", project_name)
+
+        assert result.exit_code == 0, result.output
+
+        project_path = temp_dir / "my-app"
+        config = {
+            "project": {"name": project_name, "version": "0.1.0"},
+            "tool": {
+                "hatch": {
+                    "build": {"targets": {"binary": {"versions": ["bootstrap"], "auditable": True}}},
+                },
+            },
+        }
+        builder = BinaryBuilder(str(project_path), config=config)
+
+        cargo_path = str(temp_dir / "rust tools" / "cross") if cross_name == "absolute" else cross_name
+
+        with (
+            pytest.raises(
+                ValueError,
+                match="The `auditable` option cannot be used if the `CARGO` environment variable refers to `cross`",
+            ),
+            project_path.as_cwd({"CARGO": cargo_path, "PYAPP_REPO": "test-path"}),
+        ):
+            next(builder.build())
+
+        subprocess_run.assert_not_called()
+
+    def test_auditable_compilation_failed_quiet(self, hatch, temp_dir, mocker):
+        subprocess_run = mocker.patch(
+            "subprocess.run",
+            return_value=subprocess.CompletedProcess([], returncode=101, stdout=b"error: no such command: `auditable`"),
+        )
+
+        project_name = "My.App"
+
+        with temp_dir.as_cwd():
+            result = hatch("new", project_name)
+
+        assert result.exit_code == 0, result.output
+
+        project_path = temp_dir / "my-app"
+        config = {
+            "project": {"name": project_name, "version": "0.1.0"},
+            "tool": {
+                "hatch": {
+                    "build": {"targets": {"binary": {"versions": ["bootstrap"], "auditable": True}}},
+                },
+            },
+        }
+        builder = BinaryBuilder(str(project_path), config=config)
+
+        with (
+            pytest.raises(
+                OSError,
+                match=r"Compilation failed \(code 101\)\. The `auditable` option requires cargo-auditable to be installed",
+            ),
+            project_path.as_cwd({"HATCH_QUIET": "1"}),
+        ):
+            next(builder.build())
+
+        subprocess_run.assert_called_once_with(
+            ["cargo", "auditable", "install", "pyapp", "--force", "--root", mocker.ANY],
+            cwd=mocker.ANY,
+            env=ExpectedEnvVars({"PYAPP_PROJECT_NAME": "my-app", "PYAPP_PROJECT_VERSION": "0.1.0"}),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
 
     def test_legacy(self, hatch, temp_dir, mocker):
         subprocess_run = mocker.patch("subprocess.run", side_effect=cargo_install)
